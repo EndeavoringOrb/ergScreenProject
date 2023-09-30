@@ -1,8 +1,13 @@
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageEnhance
 import torch
 import csv
 import numpy as np
+import os
+from torchinfo import summary
+import json
+import cv2
+from tqdm import tqdm
 
 def interpret_model_output(output):
     time_hrs = np.argmax(output[0]) - 1
@@ -56,7 +61,51 @@ def interpret_model_output(output):
 def to_one_hot(num, size=11):
     return [1 if i == num else 0 for i in range(-1, size-1)]
 
-def data_generator(model_num, csv_file):
+def image_augmenter(image):
+    rotate = True
+    if rotate:
+        for i in range(4):
+            rotated_image = image.rotate(-90)
+            yield rotated_image
+            brightness_enhancer = ImageEnhance.Brightness(rotated_image)
+            brighter_image = brightness_enhancer.enhance(factor=1.5)
+            yield brighter_image
+            darker_image = brightness_enhancer.enhance(factor=0.5)
+            yield darker_image
+    else:
+        yield image
+        brightness_enhancer = ImageEnhance.Brightness(image)
+        brighter_image = brightness_enhancer.enhance(factor=1.5)
+        yield brighter_image
+        darker_image = brightness_enhancer.enhance(factor=0.5)
+        yield darker_image
+
+    # gray scale
+    # Convert the Pillow image to a NumPy array
+    image_np = np.array(image)
+    # Convert the NumPy array to grayscale with 3 color channels
+    grayscale_rgb = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+    grayscale_rgb = cv2.cvtColor(grayscale_rgb, cv2.COLOR_GRAY2RGB)
+    # Save the resulting image
+    grayscale_image = Image.fromarray(grayscale_rgb)
+    if rotate:
+        for i in range(4):
+            grayscale_image = grayscale_image.rotate(-90)
+            yield grayscale_image
+            brightness_enhancer = ImageEnhance.Brightness(grayscale_image)
+            brighter_image = brightness_enhancer.enhance(factor=1.5)
+            yield brighter_image
+            darker_image = brightness_enhancer.enhance(factor=0.5)
+            yield darker_image
+    else:
+        yield grayscale_image
+        brightness_enhancer = ImageEnhance.Brightness(grayscale_image)
+        brighter_image = brightness_enhancer.enhance(factor=1.5)
+        yield brighter_image
+        darker_image = brightness_enhancer.enhance(factor=0.5)
+        yield darker_image
+
+def data_generator(csv_file):
     # Read data from the CSV file
     with open(csv_file, mode='r') as file:
         reader = csv.reader(file)
@@ -64,7 +113,7 @@ def data_generator(model_num, csv_file):
         for row in reader:
             image_path, row_num, time, meters, avg_split, avg_spm = row
             transform = transforms.ToTensor()
-            image = transform(Image.open(image_path).resize((512, 512)))
+            pure_image = Image.open(image_path).resize((512, 512))
             row_num = int(row_num)
             time = float(time)
             meters = float(meters)
@@ -121,21 +170,25 @@ def data_generator(model_num, csv_file):
             spm = avg_spm % 10
             return_x_array = [time_hr, minutes_10, minutes, seconds_10, seconds, decimal_seconds, meter_10000, meter_1000, meter_100, meter_10, meter_1, split_minutes, split_seconds_10, split_seconds, split_decimal_seconds, spm_10, spm]
             return_x_array = [to_one_hot(i) for i in return_x_array]
-            yield image, torch.tensor([row_num], dtype=torch.float32), torch.tensor(return_x_array, dtype=torch.float32)
-            #yield image, torch.tensor([row_num], dtype=torch.float32), torch.tensor([time, meters, avg_split, avg_spm], dtype=torch.float32)
+            
+            row_num_tensor = torch.tensor([row_num], dtype=torch.float32, device=device)
+            return_x_tensor = torch.tensor(return_x_array, dtype=torch.float32, device=device)
+            for image in image_augmenter(pure_image):
+                image = transform(image).to(device)
+                yield image, row_num_tensor, return_x_tensor
 
 class RowDataFinder(torch.nn.Module):
     def __init__(self):
         super(RowDataFinder, self).__init__()
         self.relu = torch.nn.ReLU()
-        self.conv1 = torch.nn.Conv2d(3, 3, 3, 2)
-        self.conv2 = torch.nn.Conv2d(3, 3, 3, 2)
-        self.conv3 = torch.nn.Conv2d(3, 3, 3, 2)
-        self.fc0 = torch.nn.Linear(11908, 256) # +1 for the row_num
-        self.fc1 = torch.nn.Linear(256, 256)
-        self.fc2 = torch.nn.Linear(256, 256)
-        self.fc3 = torch.nn.Linear(256, 256)
-        self.fc4 = torch.nn.Linear(256, 187)
+        self.conv1 = torch.nn.Conv2d(3, 512, 3, 2)
+        self.conv2 = torch.nn.Conv2d(512, 512, 3, 2)
+        self.conv3 = torch.nn.Conv2d(512, 17, 3, 2)
+        self.fc0 = torch.nn.Linear(67474, 256) # +1 for the row_num
+        self.fc1 = torch.nn.Linear(256, 1024)
+        self.fc2 = torch.nn.Linear(1024, 1024)
+        self.fc3 = torch.nn.Linear(1024, 1024)
+        self.fc4 = torch.nn.Linear(1024, 187)
 
     def forward(self, x, row_num):
         x = self.conv1(x)
@@ -159,56 +212,88 @@ class RowDataFinder(torch.nn.Module):
         return x.reshape((17, 11))
 
 if __name__ == "__main__":
+    # Hyperparameters
+    learning_rate = 2e-5
+    log_interval = 100
+    num_epochs = 1_000
+
+    # Save and Load Parameters
+    save_folder = "model"
+    load_model = True
 
     # Create an instance of the model
-    model = RowDataFinder()
-
-    # Count the number of trainable parameters
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Total Trainable Parameters: {total_params:,}")
-
-    # Hyperparameters
-    learning_rate = 1e-3
-    log_interval = 32
-    num_epochs = 1_000
-    model_save_interval = 1
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using {device}.")
+    if load_model:
+        print(f"Loading model from {save_folder}/model.pt")
+        model = torch.load(f"{save_folder}/model.pt", device)
+    else:
+        print("Creating model")
+        model = RowDataFinder().to(device)
+    print("Model Summary:")
+    summary(model, input_data=(torch.rand((3, 512, 512)).to(device), torch.rand((1)).to(device)))
 
     # Define loss function and optimizer for model_2
-    criterion_model = torch.nn.MSELoss()
+    criterion_model = torch.nn.CrossEntropyLoss()
     optimizer_model = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    steps_per_epoch = 0
+    # Make sure save folder exists
+    os.makedirs(save_folder, exist_ok=True)
 
-    print("Starting training.")
+    # Initialize trackers
+    if load_model:
+        with open(f"{save_folder}/model_info.json", "r") as f:
+            info_dict = json.load(f)
+        epoch = info_dict["epoch"]
+        lowest_epoch_loss = info_dict["avg_epoch_loss"]
+    else:
+        lowest_epoch_loss = 1_000_000_000_000_000_000_000
+        epoch = 0
+    steps_per_epoch = 0
+    first_epoch = True
+
     # Training loop
-    for epoch in range(num_epochs):
+    for _ in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         
-        # Initialize running loss
-        running_loss = 0.0
+        # Initialize loss counter
         epoch_loss = 0.0
 
         print("Training Model")
-        # Iterate over the data for model
-        for i, (image, row_num, targets) in enumerate(data_generator(2, "dataset.csv")):  # Change model_num as needed
-            if epoch == 0:
+        # Initialize tqdm with the total number of iterations
+        progress_bar = tqdm(enumerate(data_generator("dataset.csv")), total=steps_per_epoch if not first_epoch else None, mininterval=0.5)
+
+        for i, (image, row_num, targets) in progress_bar:
+            if first_epoch:
                 steps_per_epoch += 1
             optimizer_model.zero_grad()  # Zero the gradients
             outputs = model(image, row_num)  # Forward pass
             loss = criterion_model(outputs, targets)  # Calculate the loss
             loss.backward()  # Backpropagation
             optimizer_model.step()  # Update weights
-            running_loss += loss.item()
             epoch_loss += loss.item()
 
             if (i + 1) % log_interval == 0:
-                print(f"Step {i+1}/{'?' if epoch == 0 else steps_per_epoch + 1} - Loss: {running_loss / log_interval:e}")
-                running_loss = 0.0
+                progress_bar.set_description(f"Loss[{epoch_loss / (i + 1):e}]")
 
-        # Print epoch-level loss for model_2
-        print(f"Epoch {epoch+1} Loss: {epoch_loss / (steps_per_epoch + 1):e}")
+        # Print epoch-level loss for model
+        print(f"Epoch {epoch+1} Loss: {epoch_loss / (steps_per_epoch):e}")
 
-        if epoch % model_save_interval == 0:
-            torch.save(model, "model.pt")
+        if epoch_loss / (steps_per_epoch) < lowest_epoch_loss:
+            lowest_epoch_loss = epoch_loss / (steps_per_epoch)
+            torch.save(model, f"{save_folder}/model.pt")
+            info_dict = {
+                "epoch": epoch + 1,
+                "avg_epoch_loss": lowest_epoch_loss,
+                "steps_per_epoch": steps_per_epoch
+            }
+            with open(f"{save_folder}/model_info.json", "w") as f:
+                json.dump(info_dict, f)
+        
+        # Increment the epoch counter
+        epoch += 1
+
+        # Set first_epoch to false so that we don't count the steps anymore
+        first_epoch = False
 
     print("Training finished")

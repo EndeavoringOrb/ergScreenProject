@@ -22,6 +22,9 @@ import helper_funcs
 import time
 from PIL import Image
 import numpy as np
+from pillow_heif import register_heif_opener
+
+register_heif_opener()
 
 def save_dataset(dataset, csv_file = "dataset.csv"):
     """
@@ -66,8 +69,8 @@ def label_images(images_folder, current_dataset_path):
 
     for image_num, image_filename in enumerate(image_files):
         # Read and display the image
-        img = mpimg.imread(image_filename)
-        img = np.rot90(img, k=3) # rotate the image so it is upright
+        img = np.asarray(Image.open(image_filename))
+        img = np.rot90(img, k=0) # rotate the image so it is upright
 
         plt.imshow(img)
         plt.axis('off')  # Turn off axis labels and ticks
@@ -120,3 +123,4 @@ def label_images(images_folder, current_dataset_path):
 
 if __name__ == "__main__":
     dataset = label_images("images", "dataset.csv")
+    print("Finished labelling all images.")
