@@ -26,27 +26,42 @@ from pillow_heif import register_heif_opener
 
 register_heif_opener()
 
-def save_dataset(dataset, csv_file = "dataset.csv"):
+def save_dataset(dataset, csv_file, append):
     """
     dataset = [
         ("image1.jpg", 0, 0.1, 0.2, 0.3, 0.4),
         ("image2.jpg", 1, 0.5, 0.6, 0.7, 0.8),
     ]
     """
-    # Write data to CSV
-    with open(csv_file, mode='w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(["image_path", "row_num", "time", "meters", "avg_split", "avg_spm"])  # Header
-        for item in dataset:
-            writer.writerow(item)
+    if append:
+        # Append data to CSV
+        with open(csv_file, mode='a', newline='', encoding="utf-8") as file:
+            writer = csv.writer(file)
+            # Check if the file is empty, if so, write the header
+            if file.tell() == 0:
+                writer.writerow(["image_path", "row_num", "time", "meters", "avg_split", "avg_spm"])
+            for item in dataset:
+                writer.writerow(item)
+    else:
+        # Write data to CSV
+        with open(csv_file, mode='w', newline='', encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["image_path", "row_num", "time", "meters", "avg_split", "avg_spm"])  # Header
+            for item in dataset:
+                writer.writerow(item)
+        
+    
 
 def load_dataset(csv_file):
     print(f"Loading dataset from {csv_file}...")
     dataset = []
     if not os.path.exists(csv_file):
+        print(f"No dataset exists at {csv_file}. Creating csv file.")
+        with open(csv_file, "w", encoding="utf-8") as file:
+            pass
         return dataset
     # Read data from the CSV file
-    with open(csv_file, mode='r') as file:
+    with open(csv_file, mode="r", encoding="utf-8") as file:
         reader = csv.reader(file)
         header = next(reader)  # Read the header row
         for row in reader:
@@ -54,14 +69,32 @@ def load_dataset(csv_file):
     print("Finished loading dataset.")
     return dataset
 
+def get_matches(row_data, current_dataset_path):
+    # Initialize matches
+    matches = []
+
+    # Convert row_data to str format so the == operator works
+    row_data = [str(i) for i in row_data]
+
+    # Read data from the CSV file
+    with open(current_dataset_path, mode="r", encoding="utf-8") as file:
+        reader = csv.reader(file)
+        header = next(reader)  # Read the header row
+        for row in reader:
+            if row[1] == '0':
+                if row[2] == row_data[2] and row[3] == row_data[3] and row[4] == row_data[4] and row[5] == row_data[5]:
+                    matches.append(row[0])
+    return matches
+
 def label_images(images_folder, current_dataset_path):
-    dataset = load_dataset(current_dataset_path)
+    old_dataset = load_dataset(current_dataset_path)
+    new_dataset = []
 
     print("Finding unlabeled images...")
     # List all image files in the folder
     image_files = [os.path.join(images_folder, f) for f in os.listdir(images_folder)]
     # Filter so that already labeled images are not included
-    image_paths = [row[0] for row in dataset]
+    image_paths = [row[0] for row in old_dataset]
     image_files = [item for item in image_files if item not in image_paths]
     print("Finished.\n")
 
@@ -78,18 +111,39 @@ def label_images(images_folder, current_dataset_path):
 
         # Clear Lines
         if image_num != 0:
-            helper_funcs.clear_lines(7)
+            helper_funcs.clear_lines(rows_to_clear + 1)
 
         # Get number of rows from user
         print(f"Image {image_num + 1}/{number_of_images} - ({100 * ((image_num + 1) / number_of_images):.2f}%): {image_filename}")
-        row_num = int(input("Enter number of rows in image: "))
+        row_num_input = input("Enter number of rows in image: ")
+        if row_num_input.lower() == "q":
+            os.remove(image_filename)
+            continue
+        row_num = int(row_num_input)
         helper_funcs.clear_lines(1)
+
+        # Initialize rows to clear tracker
+        rows_to_clear = 6
 
         # Get each row from user
         for i in range(row_num):
             if i != 0:
                 # Clear lines for the next input
-                helper_funcs.clear_lines(6)
+                helper_funcs.clear_lines(rows_to_clear)
+
+                # Search for matches (for example, two photos of the same erg screen were taken)
+                if i == 1:
+                    matches = get_matches(new_dataset[-1], current_dataset_path)
+                    if len(matches) > 0:
+                        print(f"Found Matche(s): ", end="")
+                        print(matches[0], end="")
+                        for item in matches[1:]:
+                            print(f", {item}", end="")
+                        print()
+                    else:
+                        print("No Matches Found.")
+                    rows_to_clear = 7
+
 
             # Print which row the user should label
             print(f"Current row: {i + 1}/{row_num}")
@@ -114,13 +168,11 @@ def label_images(images_folder, current_dataset_path):
 
             print("Saving...")
             # Save labels to dataset
-            dataset.append((image_filename, i, time, meters, avg_split, avg_spm))
+            new_dataset.append((image_filename, i, time, meters, avg_split, avg_spm))
 
         # Save dataset
-        save_dataset(dataset, current_dataset_path)
-
-    return dataset
+        save_dataset(new_dataset, current_dataset_path, append=True)
 
 if __name__ == "__main__":
-    dataset = label_images("images", "dataset.csv")
+    label_images("images", "dataset.csv")
     print("Finished labelling all images.")
