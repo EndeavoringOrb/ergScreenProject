@@ -20,11 +20,54 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import helper_funcs
 import time
-from PIL import Image
+from PIL import Image, ExifTags
 import numpy as np
 from pillow_heif import register_heif_opener
 
 register_heif_opener()
+
+def remove_dataset_dupes(csv_file, out_file):
+    dataset = []
+    with open(csv_file, mode="r", encoding="utf-8") as file:
+        reader = csv.reader(file)
+        header = next(reader)  # Read the header row
+        for row in reader:
+            dataset.append(tuple(row))
+    print(f"dataset length: {len(dataset)}")
+    dataset = list(set(dataset))
+    print(f"dataset cleaned length: {len(dataset)}")
+    dataset = [list(i) for i in dataset]
+    dataset = sorted(dataset, key=lambda x: (x[0], x[1]))
+
+    # Write data to CSV
+    with open(out_file, mode='w', newline='', encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["image_path", "row_num", "time", "meters", "avg_split", "avg_spm"])  # Header
+        for item in dataset:
+            writer.writerow(item)
+
+def fix_image_orientation(image_path):
+    # Open the image using PIL (Pillow)
+    image = Image.open(image_path)
+
+    # Check if the image has EXIF data (metadata)
+    if hasattr(image, '_getexif') and image._getexif() is not None:
+        # Iterate over EXIF tags and rotate the image if orientation information is found
+        for orientation in ExifTags.TAGS.keys():
+            if ExifTags.TAGS[orientation] == 'Orientation':
+                exif = dict(image._getexif().items())
+                if orientation in exif:
+                    # Rotate the image based on the orientation value
+                    if exif[orientation] == 3:
+                        image = image.rotate(180, expand=True)
+                    elif exif[orientation] == 6:
+                        image = image.rotate(270, expand=True)
+                    elif exif[orientation] == 8:
+                        image = image.rotate(90, expand=True)
+
+    # Save the fixed image or return it as per your requirement
+    # For example, you can save it using image.save('fixed_image.jpg')
+    return image
 
 def save_dataset(dataset, csv_file, append):
     """
@@ -49,8 +92,6 @@ def save_dataset(dataset, csv_file, append):
             writer.writerow(["image_path", "row_num", "time", "meters", "avg_split", "avg_spm"])  # Header
             for item in dataset:
                 writer.writerow(item)
-        
-    
 
 def load_dataset(csv_file):
     print(f"Loading dataset from {csv_file}...")
@@ -88,7 +129,6 @@ def get_matches(row_data, current_dataset_path):
 
 def label_images(images_folder, current_dataset_path):
     old_dataset = load_dataset(current_dataset_path)
-    new_dataset = []
 
     print("Finding unlabeled images...")
     # List all image files in the folder
@@ -100,10 +140,12 @@ def label_images(images_folder, current_dataset_path):
 
     number_of_images = len(image_files)
 
+    rows_to_clear = 1
+
     for image_num, image_filename in enumerate(image_files):
+        new_dataset = []
         # Read and display the image
-        img = np.asarray(Image.open(image_filename))
-        img = np.rot90(img, k=0) # rotate the image so it is upright
+        img = np.asarray(fix_image_orientation(image_filename))
 
         plt.imshow(img)
         plt.axis('off')  # Turn off axis labels and ticks
@@ -117,6 +159,7 @@ def label_images(images_folder, current_dataset_path):
         print(f"Image {image_num + 1}/{number_of_images} - ({100 * ((image_num + 1) / number_of_images):.2f}%): {image_filename}")
         row_num_input = input("Enter number of rows in image: ")
         if row_num_input.lower() == "q":
+            rows_to_clear = 1
             os.remove(image_filename)
             continue
         row_num = int(row_num_input)
@@ -143,6 +186,8 @@ def label_images(images_folder, current_dataset_path):
                     else:
                         print("No Matches Found.")
                     rows_to_clear = 7
+                else:
+                    rows_to_clear = 6
 
 
             # Print which row the user should label
@@ -175,4 +220,6 @@ def label_images(images_folder, current_dataset_path):
 
 if __name__ == "__main__":
     label_images("images", "dataset.csv")
-    print("Finished labelling all images.")
+    print("Finished labelling all images. Removing duplicates...")
+    remove_dataset_dupes("dataset.csv", "dataset.csv")
+    print("Finished.")
