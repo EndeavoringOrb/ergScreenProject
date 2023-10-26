@@ -353,8 +353,10 @@ if __name__ == "__main__":
                 info_dict = json.load(f)
                 info_dicts.append(info_dict)
         epoch = max([info_dict["epoch"] for info_dict in info_dicts])
-        lowest_epoch_losses = [info_dict["avg_epoch_loss"] for info_dict in info_dicts]
-        lowest_epoch_losses = [1_000_000_000_000_000_000_000] * 9
+        if save_folder == load_folder:
+            lowest_epoch_losses = [info_dict["avg_epoch_loss"] for info_dict in info_dicts]
+        else:
+            lowest_epoch_losses = [1_000_000_000_000_000_000_000] * 9
     else:
         lowest_epoch_losses = [1_000_000_000_000_000_000_000] * 9
         epoch = 0

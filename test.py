@@ -89,5 +89,38 @@ def MOEtest(model_path):
             print(f"Predicted: {model_prediction}")
             input()
 
+def predict_image(model_path, image_path):
+    print(f"Predicting Image: {image_path}")
+
+    print("Loading model...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_paths = [path for path in os.listdir(model_path) if path[-2:] == "pt"]
+    models = [torch.load(model_path + "/" + path, device) for path in model_paths]
+
+    transform = transforms.ToTensor()
+    image_tensor = transform(canny_image(fix_image_orientation(image_path).resize((768, 768))))
+    image_tensor = image_tensor.unsqueeze(dim=0)
+
+    # Display the image
+    img = np.asarray(image_tensor)[0][0]
+
+    plt.imshow(img)
+    plt.axis('off')  # Turn off axis labels and ticks
+    plt.show(block=False)
+
+    image_tensor = image_tensor.to(device)
+
+    num_rows = int(input("How many rows of data are there?: "))
+
+    for row_num in range(num_rows):
+        with torch.no_grad():
+            model_prediction = models[row_num](image_tensor).cpu().numpy()
+        model_prediction = interpret_model_output(model_prediction)
+        
+        print(f"Row Num: {row_num}")
+        print(f"Predicted: {model_prediction}\n")
+    
+    input("Press Enter to quit predict_image.")
+
 if __name__ == "__main__":
-    MOEtest("MOEmodels")
+    predict_image("good_models/model2", "images\IMG_0403.HEIC")
