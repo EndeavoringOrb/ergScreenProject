@@ -190,7 +190,7 @@ def data_generator(csv_file, num_workers, worker_num, save_folder, split="train"
             image_path, row_num, time, meters, avg_split, avg_spm = row
             transform = transforms.ToTensor()
             pure_image = fix_image_orientation(image_path).resize((768, 768))
-            pure_image = ImageOps.grayscale(image)
+            pure_image = ImageOps.grayscale(pure_image)
             #pure_image = canny_image(pure_image)
             row_num = int(row_num)
             time = float(time)
@@ -342,7 +342,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}.")
     if load_model:
-        print(f"Loading model from {save_folder}/model.pt")
+        print(f"Loading model from {save_folder}")
         models = [torch.load(f"{load_folder}/rowModel_{i}.pt", device) for i in range(9)]
     else:
         print("Creating model")
@@ -366,7 +366,7 @@ if __name__ == "__main__":
                 info_dicts.append(info_dict)
         epoch = max([info_dict["epoch"] for info_dict in info_dicts])
         if save_folder == load_folder:
-            lowest_epoch_losses = [info_dict["avg_epoch_loss"] for info_dict in info_dicts]
+            lowest_epoch_losses = [info_dict["avg_epoch_val_loss"] for info_dict in info_dicts]
         else:
             lowest_epoch_losses = [1_000_000_000_000_000_000_000] * 9
     else:
@@ -442,7 +442,7 @@ if __name__ == "__main__":
                     epoch_losses[row_num] += loss.item()
 
                     for i in range(9):
-                        if step_counts[i] % log_interval == 0 and step_counts[i] > 0:
+                        if step_counts[i] > 0:
                             epoch_avg_losses[i] = epoch_losses[i] / step_counts[i]
                     pbar.set_description(f"Losses {get_e_notation_of_list(epoch_avg_losses)}")
                     pbar.update(1)
@@ -484,7 +484,7 @@ if __name__ == "__main__":
                     epoch_val_losses[row_num] += loss.item()
 
                     for i in range(9):
-                        if val_step_counts[i] % log_interval == 0 and val_step_counts[i] > 0:
+                        if val_step_counts[i] > 0:
                             val_epoch_avg_losses[i] = epoch_val_losses[i] / val_step_counts[i]
                     pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
                     pbar.update(1)
@@ -494,22 +494,22 @@ if __name__ == "__main__":
             if step_counts[i] > 0:
                 epoch_avg_losses[i] = epoch_losses[i] / step_counts[i]
             else:
-                epoch_avg_losses[i] = 0
+                epoch_avg_losses[i] = 1e9
         print(f"Epoch {epoch+1} Loss: {get_e_notation_of_list(epoch_avg_losses)}")
         for i in range(9):
             if val_step_counts[i] > 0:
                 val_epoch_avg_losses[i] = epoch_val_losses[i] / val_step_counts[i]
             else:
-                val_epoch_avg_losses[i] = 0
+                val_epoch_avg_losses[i] = 1e9
         print(f"Epoch {epoch+1} Val Loss: {get_e_notation_of_list(val_epoch_avg_losses)}")
 
         for i in range(9):
-            if epoch_losses[i] / step_counts[i] < lowest_epoch_losses[i]:
-                lowest_epoch_losses[i] = epoch_losses[i] / step_counts[i]
+            if val_epoch_avg_losses[i] <= lowest_epoch_losses[i]:
+                lowest_epoch_losses[i] = val_epoch_avg_losses[i]
                 torch.save(models[i], f"{save_folder}/rowModel_{i}.pt")
                 info_dict = {
                     "epoch": epoch + 1,
-                    "avg_epoch_loss": lowest_epoch_losses[i],
+                    "avg_epoch_val_loss": lowest_epoch_losses[i],
                     "steps_per_epoch": step_counts[i]
                 }
                 with open(f"{save_folder}/rowModel_{i}_info.json", "w") as f:
