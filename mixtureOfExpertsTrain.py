@@ -164,12 +164,23 @@ def canny_image(image):
 
     return canny_image
 
-def data_generator(csv_file, num_workers, worker_num):
+def data_generator(csv_file, num_workers, worker_num, save_folder, split="train", split_size=0.8):
     # Read data from the CSV file
     with open(csv_file, mode='r') as file:
         reader = csv.reader(file)
         header = next(reader)  # Read the header row
         rows = list(reader)
+        split_row = int(len(rows) * split_size)
+        if split == "train":
+            rows = rows[:split_row]
+            image_path_list = [row[0] for row in rows]
+            with open(f"{save_folder}/train_dataset_info.json", "w") as f:
+                json.dump(image_path_list, f)
+        else:
+            rows = rows[split_row:]
+            image_path_list = [row[0] for row in rows]
+            with open(f"{save_folder}/val_dataset_info.json", "w") as f:
+                json.dump(image_path_list, f)
         number_of_rows = int(len(rows) / num_workers)
         if worker_num == num_workers - 1:
             rows = rows[worker_num * number_of_rows:]
@@ -246,9 +257,9 @@ def data_generator(csv_file, num_workers, worker_num):
                 yield image, row_num_tensor, return_x_tensor
 
 # Function to add data generator pairs to the queue
-def fill_queue(data_queue, num_workers, worker_num):
+def fill_queue(data_queue, num_workers, worker_num, save_folder):
     # Initialize tqdm with the total number of iterations
-    for item in enumerate(data_generator("dataset.csv", num_workers, worker_num)):
+    for item in enumerate(data_generator("dataset.csv", num_workers, worker_num, save_folder)):
         data_queue.put(item)
 
 class MOERowDataFinder(torch.nn.Module):
@@ -321,7 +332,7 @@ if __name__ == "__main__":
 
     # Save and Load Parameters
     save_folder = "MOEmodels"
-    load_model = True
+    load_model = False
     load_folder = "good_models/model1"
 
     # Generator Parameters
@@ -362,10 +373,13 @@ if __name__ == "__main__":
         lowest_epoch_losses = [1_000_000_000_000_000_000_000] * 9
         epoch = 0
     steps_per_epoch = 0
+    val_steps_per_epoch = 0
     first_epoch = True
 
     all_data = []
+    val_data = []
     step_counts = [0] * 9
+    val_step_counts = [0] * 9
 
     # Training loop
     for _ in range(num_epochs):
@@ -373,7 +387,9 @@ if __name__ == "__main__":
         
         # Initialize counters
         epoch_losses = [0] * 9
+        epoch_val_losses = [0] * 9
         epoch_avg_losses = [0] * 9
+        val_epoch_avg_losses = [0] * 9
 
         print("Training Model")
         
@@ -385,11 +401,11 @@ if __name__ == "__main__":
 
             for worker_num in range(num_workers):
                 # Start the thread to fill the queue
-                data_thread = threading.Thread(target=fill_queue, args=(data_queue, num_workers, worker_num))
+                data_thread = threading.Thread(target=fill_queue, args=(data_queue, num_workers, worker_num, save_folder))
                 data_thread.start()
                 threads.append(data_thread)
 
-            with tqdm(total=None if first_epoch else steps_per_epoch, mininterval=0.5) as pbar:
+            with tqdm(total=None, mininterval=0.5) as pbar:
                 while True:
                     try:
                         # Retrieve data from the queue
@@ -414,15 +430,22 @@ if __name__ == "__main__":
                     pbar.set_description(f"Losses {get_e_notation_of_list(epoch_avg_losses)}")
                     pbar.update(1)
         else:
-            for item in tqdm(all_data):
-                image, row_num, targets = item
-                row_num = int(row_num.item())
-                optimizers[row_num].zero_grad() # Zero the gradients
-                outputs = models[row_num](image)  # Forward pass
-                loss = criterion_model(outputs.squeeze(), targets)  # Calculate the loss
-                loss.backward()  # Backpropagation
-                optimizers[row_num].step()  # Update weights
-                epoch_losses[row_num] += loss.item()
+            with tqdm(total=len(all_data), mininterval=0.5) as pbar:
+                for item in all_data:
+                    image, row_num, targets = item
+                    row_num = int(row_num.item())
+                    optimizers[row_num].zero_grad() # Zero the gradients
+                    outputs = models[row_num](image)  # Forward pass
+                    loss = criterion_model(outputs.squeeze(), targets)  # Calculate the loss
+                    loss.backward()  # Backpropagation
+                    optimizers[row_num].step()  # Update weights
+                    epoch_losses[row_num] += loss.item()
+
+                    for i in range(9):
+                        if step_counts[i] % log_interval == 0 and step_counts[i] > 0:
+                            epoch_avg_losses[i] = epoch_losses[i] / step_counts[i]
+                    pbar.set_description(f"Losses {get_e_notation_of_list(epoch_avg_losses)}")
+                    pbar.update(1)
 
         for i in range(9):
             if step_counts[i] % log_interval == 0 and step_counts[i] > 0:
@@ -432,10 +455,53 @@ if __name__ == "__main__":
             for thread in threads:
                 thread.join()
 
+            print("Validating...")
+            val_gen = data_generator("dataset.csv", num_workers, worker_num, save_folder, split="val")
+        
+            with tqdm(total=None, mininterval=0.5) as pbar:
+                for image, row_num, targets in val_gen:
+                    val_data.append((image, row_num, targets))
+                    val_steps_per_epoch += 1
+                    row_num = int(row_num.item())
+                    val_step_counts[row_num] += 1
+                    with torch.no_grad():
+                        outputs = models[row_num](image)  # Forward pass
+                    loss = criterion_model(outputs.squeeze(), targets)  # Calculate the loss
+                    epoch_val_losses[row_num] += loss.item()
+
+                    for i in range(9):
+                        if val_step_counts[i] % log_interval == 0 and val_step_counts[i] > 0:
+                            val_epoch_avg_losses[i] = epoch_val_losses[i] / val_step_counts[i]
+                    pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
+                    pbar.update(1)
+        else:
+            with tqdm(total=len(val_data), mininterval=0.5) as pbar:
+                for item in val_data:
+                    image, row_num, targets = item
+                    row_num = int(row_num.item())
+                    outputs = models[row_num](image)  # Forward pass
+                    loss = criterion_model(outputs.squeeze(), targets)  # Calculate the loss
+                    epoch_val_losses[row_num] += loss.item()
+
+                    for i in range(9):
+                        if val_step_counts[i] % log_interval == 0 and val_step_counts[i] > 0:
+                            val_epoch_avg_losses[i] = epoch_val_losses[i] / val_step_counts[i]
+                    pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
+                    pbar.update(1)
+
         # Print epoch-level loss for model
         for i in range(9):
-            epoch_avg_losses[i] = epoch_losses[i] / step_counts[i]
+            if step_counts[i] > 0:
+                epoch_avg_losses[i] = epoch_losses[i] / step_counts[i]
+            else:
+                epoch_avg_losses[i] = 0
         print(f"Epoch {epoch+1} Loss: {get_e_notation_of_list(epoch_avg_losses)}")
+        for i in range(9):
+            if val_step_counts[i] > 0:
+                val_epoch_avg_losses[i] = epoch_val_losses[i] / val_step_counts[i]
+            else:
+                val_epoch_avg_losses[i] = 0
+        print(f"Epoch {epoch+1} Val Loss: {get_e_notation_of_list(val_epoch_avg_losses)}")
 
         for i in range(9):
             if epoch_losses[i] / step_counts[i] < lowest_epoch_losses[i]:
