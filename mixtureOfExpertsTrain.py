@@ -182,7 +182,9 @@ def data_generator(csv_file, num_workers, worker_num, save_folder, split="train"
             with open(f"{save_folder}/val_dataset_info.json", "w") as f:
                 json.dump(image_path_list, f)
         number_of_rows = int(len(rows) / num_workers)
-        if worker_num == num_workers - 1:
+        if num_workers == 1:
+            rows = rows
+        elif worker_num == num_workers - 1:
             rows = rows[worker_num * number_of_rows:]
         else:
             rows = rows[worker_num * number_of_rows:(worker_num + 1) * number_of_rows]
@@ -430,6 +432,7 @@ if __name__ == "__main__":
                     pbar.set_description(f"Losses {get_e_notation_of_list(epoch_avg_losses)}")
                     pbar.update(1)
         else:
+            tempStepCount = 0
             with tqdm(total=len(all_data), mininterval=0.5) as pbar:
                 for item in all_data:
                     image, row_num, targets = item
@@ -441,10 +444,13 @@ if __name__ == "__main__":
                     optimizers[row_num].step()  # Update weights
                     epoch_losses[row_num] += loss.item()
 
+                    tempStepCount += 1
+
                     for i in range(9):
                         if step_counts[i] > 0:
                             epoch_avg_losses[i] = epoch_losses[i] / step_counts[i]
-                    pbar.set_description(f"Losses {get_e_notation_of_list(epoch_avg_losses)}")
+                    if tempStepCount % log_interval == 0:
+                        pbar.set_description(f"Losses {get_e_notation_of_list(epoch_avg_losses)}")
                     pbar.update(1)
 
         for i in range(9):
@@ -456,8 +462,8 @@ if __name__ == "__main__":
                 thread.join()
 
             print("Validating...")
-            val_gen = data_generator("dataset.csv", num_workers, worker_num, save_folder, split="val")
-        
+            val_gen = data_generator("dataset.csv", 1, 0, save_folder, split="val")
+
             with tqdm(total=None, mininterval=0.5) as pbar:
                 for image, row_num, targets in val_gen:
                     val_data.append((image, row_num, targets))
@@ -469,12 +475,16 @@ if __name__ == "__main__":
                     loss = criterion_model(outputs.squeeze(), targets)  # Calculate the loss
                     epoch_val_losses[row_num] += loss.item()
 
+                    tempStepCount += 1
+
                     for i in range(9):
                         if val_step_counts[i] % log_interval == 0 and val_step_counts[i] > 0:
                             val_epoch_avg_losses[i] = epoch_val_losses[i] / val_step_counts[i]
-                    pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
+                    if tempStepCount % log_interval == 0:
+                        pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
                     pbar.update(1)
         else:
+            tempStepCount = 0
             with tqdm(total=len(val_data), mininterval=0.5) as pbar:
                 for item in val_data:
                     image, row_num, targets = item
