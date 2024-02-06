@@ -179,7 +179,8 @@ def data_generator(csv_file, num_workers, worker_num):
             image_path, row_num, time, meters, avg_split, avg_spm = row
             transform = transforms.ToTensor()
             pure_image = fix_image_orientation(image_path).resize((768, 768))
-            pure_image = canny_image(pure_image)
+            pure_image = ImageOps.grayscale(image)
+            #pure_image = canny_image(pure_image)
             row_num = int(row_num)
             time = float(time)
             meters = float(meters)
