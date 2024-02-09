@@ -190,10 +190,9 @@ def data_generator(csv_file, num_workers, worker_num, save_folder, split="train"
             rows = rows[worker_num * number_of_rows:(worker_num + 1) * number_of_rows]
         for row in rows:
             image_path, row_num, time, meters, avg_split, avg_spm = row
-            transform = transforms.ToTensor()
-            pure_image = fix_image_orientation(image_path).resize((768, 768))
+            transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5), (0.5))])
+            pure_image = fix_image_orientation(image_path).resize((512, 512))
             pure_image = ImageOps.grayscale(pure_image)
-            #pure_image = canny_image(pure_image)
             row_num = int(row_num)
             time = float(time)
             meters = float(meters)
@@ -294,11 +293,12 @@ class CustomCNN(torch.nn.Module):
         # Max pooling layer
         self.pool = torch.nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         # Fully connected layers
-        self.fc1 = torch.nn.Linear(18432, 256)
+        self.fc1 = torch.nn.Linear(8192, 256)
         self.fc2 = torch.nn.Linear(256, 256)
         self.fc3 = torch.nn.Linear(256, 187)  # Output layer with 187 classes
         # Activation funcs
         self.leaky_relu = torch.nn.LeakyReLU()
+        self.softmax = torch.nn.Softmax(2)
 
     def forward(self, x):
         # Convolutional layers with ReLU activation and max pooling
@@ -316,7 +316,9 @@ class CustomCNN(torch.nn.Module):
         x = self.leaky_relu(self.fc2(x))
         # Output layer
         x = self.fc3(x)
-        return x.reshape((x.shape[0], 17, 11))
+        x = x.reshape((x.shape[0], 17, 11))
+        x = self.softmax(x)
+        return x
 
 def get_e_notation_of_list(input_list):
     if len(input_list) == 0:
@@ -350,7 +352,7 @@ if __name__ == "__main__":
         print("Creating model")
         models = [CustomCNN().to(device) for i in range(9)]
     print("Model Summary:")
-    summary(models[0], input_data=(torch.rand((1, 1, 768, 768)).to(device)))
+    summary(models[0], input_data=(torch.rand((1, 1, 512, 512)).to(device)))
 
     # Define loss function and optimizers
     criterion_model = torch.nn.CrossEntropyLoss()
