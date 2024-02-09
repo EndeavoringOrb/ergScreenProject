@@ -475,13 +475,10 @@ if __name__ == "__main__":
                     loss = criterion_model(outputs.squeeze(), targets)  # Calculate the loss
                     epoch_val_losses[row_num] += loss.item()
 
-                    tempStepCount += 1
-
                     for i in range(9):
                         if val_step_counts[i] % log_interval == 0 and val_step_counts[i] > 0:
                             val_epoch_avg_losses[i] = epoch_val_losses[i] / val_step_counts[i]
-                    if tempStepCount % log_interval == 0:
-                        pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
+                    pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
                     pbar.update(1)
         else:
             tempStepCount = 0
@@ -493,10 +490,13 @@ if __name__ == "__main__":
                     loss = criterion_model(outputs.squeeze(), targets)  # Calculate the loss
                     epoch_val_losses[row_num] += loss.item()
 
+                    tempStepCount += 1
+
                     for i in range(9):
                         if val_step_counts[i] > 0:
                             val_epoch_avg_losses[i] = epoch_val_losses[i] / val_step_counts[i]
-                    pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
+                    if tempStepCount % log_interval == 0:
+                        pbar.set_description(f"Losses {get_e_notation_of_list(val_epoch_avg_losses)}")
                     pbar.update(1)
 
         # Print epoch-level loss for model

@@ -19,7 +19,7 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import helper_funcs
-import time
+import random
 from PIL import Image, ExifTags
 import numpy as np
 from pillow_heif import register_heif_opener
@@ -136,6 +136,7 @@ def label_images(images_folder, current_dataset_path):
     # Filter so that already labeled images are not included
     image_paths = [row[0] for row in old_dataset]
     image_files = [item for item in image_files if item not in image_paths]
+    random.shuffle(image_files)
     print("Finished.\n")
 
     number_of_images = len(image_files)
