@@ -266,7 +266,6 @@ def fill_queue(data_queue, num_workers, worker_num, save_folder):
 class MOERowDataFinder(torch.nn.Module):
     def __init__(self):
         super(MOERowDataFinder, self).__init__()
-        #self.vit = VisionTransformer.from_pretrained('vit-base-patch16')
         self.vit = VisionTransformer(768, 16, 12, 4, 128, 3072, num_classes=187)
         self.leaky_relu = torch.nn.LeakyReLU()
         self.fc = torch.nn.Linear(187, 187)
@@ -278,7 +277,7 @@ class MOERowDataFinder(torch.nn.Module):
         x = self.fc(x)
         x = self.sig(x)
         return x.reshape((17,11))
-    
+
 class CustomCNN(torch.nn.Module):
     def __init__(self):
         super(CustomCNN, self).__init__()
@@ -336,8 +335,8 @@ if __name__ == "__main__":
 
     # Save and Load Parameters
     save_folder = "MOEmodels"
-    load_model = False
-    load_folder = "good_models/model1"
+    load_model = True
+    load_folder = "MOEmodels"
 
     # Generator Parameters
     num_workers = 12
