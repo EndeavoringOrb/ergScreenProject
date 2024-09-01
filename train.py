@@ -8,6 +8,12 @@ from torchinfo import summary
 import json
 import cv2
 from tqdm import tqdm
+from pillow_heif import register_heif_opener
+import queue
+import threading
+from joblib import Parallel, delayed
+
+register_heif_opener()
 
 def interpret_model_output(output):
     time_hrs = np.argmax(output[0]) - 1
@@ -61,56 +67,69 @@ def interpret_model_output(output):
 def to_one_hot(num, size=11):
     return [1 if i == num else 0 for i in range(-1, size-1)]
 
-def image_augmenter(image):
-    rotate = True
-    if rotate:
-        for i in range(4):
-            rotated_image = image.rotate(-90)
-            yield rotated_image
-            brightness_enhancer = ImageEnhance.Brightness(rotated_image)
-            brighter_image = brightness_enhancer.enhance(factor=1.5)
-            yield brighter_image
-            darker_image = brightness_enhancer.enhance(factor=0.5)
-            yield darker_image
+def image_augmenter(image, augment=True, rotate=True, brightness=True, grayscale=True):
+    if augment:
+        if rotate:
+            for i in range(4):
+                rotated_image = image.rotate(-90)
+                yield rotated_image
+                if brightness:
+                    brightness_enhancer = ImageEnhance.Brightness(rotated_image)
+                    brighter_image = brightness_enhancer.enhance(factor=1.5)
+                    yield brighter_image
+                    darker_image = brightness_enhancer.enhance(factor=0.5)
+                    yield darker_image
+        else:
+            yield image
+            if brightness:
+                brightness_enhancer = ImageEnhance.Brightness(image)
+                brighter_image = brightness_enhancer.enhance(factor=1.5)
+                yield brighter_image
+                darker_image = brightness_enhancer.enhance(factor=0.5)
+                yield darker_image
+        
+        if grayscale:
+            # gray scale
+            # Convert the Pillow image to a NumPy array
+            image_np = np.array(image)
+            # Convert the NumPy array to grayscale with 3 color channels
+            grayscale_rgb = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+            grayscale_rgb = cv2.cvtColor(grayscale_rgb, cv2.COLOR_GRAY2RGB)
+            # Save the resulting image
+            grayscale_image = Image.fromarray(grayscale_rgb)
+            if rotate:
+                for i in range(4):
+                    grayscale_image = grayscale_image.rotate(-90)
+                    yield grayscale_image
+                    if brightness:
+                        brightness_enhancer = ImageEnhance.Brightness(grayscale_image)
+                        brighter_image = brightness_enhancer.enhance(factor=1.5)
+                        yield brighter_image
+                        darker_image = brightness_enhancer.enhance(factor=0.5)
+                        yield darker_image
+            else:
+                yield grayscale_image
+                if brightness:
+                    brightness_enhancer = ImageEnhance.Brightness(grayscale_image)
+                    brighter_image = brightness_enhancer.enhance(factor=1.5)
+                    yield brighter_image
+                    darker_image = brightness_enhancer.enhance(factor=0.5)
+                    yield darker_image
     else:
         yield image
-        brightness_enhancer = ImageEnhance.Brightness(image)
-        brighter_image = brightness_enhancer.enhance(factor=1.5)
-        yield brighter_image
-        darker_image = brightness_enhancer.enhance(factor=0.5)
-        yield darker_image
 
-    # gray scale
-    # Convert the Pillow image to a NumPy array
-    image_np = np.array(image)
-    # Convert the NumPy array to grayscale with 3 color channels
-    grayscale_rgb = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-    grayscale_rgb = cv2.cvtColor(grayscale_rgb, cv2.COLOR_GRAY2RGB)
-    # Save the resulting image
-    grayscale_image = Image.fromarray(grayscale_rgb)
-    if rotate:
-        for i in range(4):
-            grayscale_image = grayscale_image.rotate(-90)
-            yield grayscale_image
-            brightness_enhancer = ImageEnhance.Brightness(grayscale_image)
-            brighter_image = brightness_enhancer.enhance(factor=1.5)
-            yield brighter_image
-            darker_image = brightness_enhancer.enhance(factor=0.5)
-            yield darker_image
-    else:
-        yield grayscale_image
-        brightness_enhancer = ImageEnhance.Brightness(grayscale_image)
-        brighter_image = brightness_enhancer.enhance(factor=1.5)
-        yield brighter_image
-        darker_image = brightness_enhancer.enhance(factor=0.5)
-        yield darker_image
-
-def data_generator(csv_file):
+def data_generator(csv_file, num_workers, worker_num):
     # Read data from the CSV file
     with open(csv_file, mode='r') as file:
         reader = csv.reader(file)
         header = next(reader)  # Read the header row
-        for row in reader:
+        rows = list(reader)
+        number_of_rows = int(len(rows) / num_workers)
+        if worker_num == num_workers - 1:
+            rows = rows[worker_num * number_of_rows:]
+        else:
+            rows = rows[worker_num * number_of_rows:(worker_num + 1) * number_of_rows]
+        for row in rows:
             image_path, row_num, time, meters, avg_split, avg_spm = row
             transform = transforms.ToTensor()
             pure_image = Image.open(image_path).resize((512, 512))
@@ -173,53 +192,89 @@ def data_generator(csv_file):
             
             row_num_tensor = torch.tensor([row_num], dtype=torch.float32, device=device)
             return_x_tensor = torch.tensor(return_x_array, dtype=torch.float32, device=device)
-            for image in image_augmenter(pure_image):
+            for image in image_augmenter(pure_image, augment=True, rotate=True, brightness=False, grayscale=False):
                 image = transform(image).to(device)
                 yield image, row_num_tensor, return_x_tensor
+
+# Function to add data generator pairs to the queue
+def fill_queue(data_queue, num_workers, worker_num):
+    # Initialize tqdm with the total number of iterations
+    for item in enumerate(data_generator("dataset.csv", num_workers, worker_num)):
+        data_queue.put(item)
 
 class RowDataFinder(torch.nn.Module):
     def __init__(self):
         super(RowDataFinder, self).__init__()
-        self.relu = torch.nn.ReLU()
-        self.conv1 = torch.nn.Conv2d(3, 512, 3, 2)
-        self.conv2 = torch.nn.Conv2d(512, 512, 3, 2)
-        self.conv3 = torch.nn.Conv2d(512, 17, 3, 2)
-        self.fc0 = torch.nn.Linear(67474, 256) # +1 for the row_num
-        self.fc1 = torch.nn.Linear(256, 1024)
-        self.fc2 = torch.nn.Linear(1024, 1024)
-        self.fc3 = torch.nn.Linear(1024, 1024)
-        self.fc4 = torch.nn.Linear(1024, 187)
+        self.conv_layers = torch.nn.Sequential(
+            torch.nn.Conv2d(3, 64, 3, 1),
+            torch.nn.ReLU(),
+
+            torch.nn.Conv2d(64, 64, 3, 2),
+            torch.nn.ReLU(),
+
+            torch.nn.Conv2d(64, 64, 3, 1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(64, 128, 3, 1),
+            torch.nn.ReLU(),
+
+            torch.nn.Conv2d(128, 128, 3, 2),
+            torch.nn.ReLU(),
+
+            torch.nn.Conv2d(128, 128, 3, 1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(128, 256, 3, 1),
+            torch.nn.ReLU(),
+
+            torch.nn.Conv2d(256, 256, 3, 2),
+            torch.nn.ReLU(),
+
+            torch.nn.Conv2d(256, 256, 3, 1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(256, 512, 3, 1),
+            torch.nn.ReLU(),
+
+            torch.nn.Conv2d(512, 512, 3, 2),
+            torch.nn.ReLU(),
+
+            torch.nn.Conv2d(512, 512, 3, 1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(512, 17, 3, 1),
+            torch.nn.ReLU()
+        )
+        self.fc_layers = torch.nn.Sequential(
+            torch.nn.Linear(9025, 1024),  # +1 for the row_num
+            torch.nn.ReLU(),
+            torch.nn.Linear(1024, 1024),
+            torch.nn.ReLU(),
+            torch.nn.Linear(1024, 1024),
+            torch.nn.ReLU(),
+            torch.nn.Linear(1024, 1024),
+            torch.nn.ReLU(),
+            torch.nn.Linear(1024, 187),
+        )
+        self.fc_row_num = torch.nn.Linear(1, 32)
 
     def forward(self, x, row_num):
-        x = self.conv1(x)
-        x = self.relu(x)
-        x = self.conv2(x)
-        x = self.relu(x)
-        x = self.conv3(x)
-        x = self.relu(x)
-        x = x.view(-1)  # Flatten the tensor
+        x = self.conv_layers(x)
+        x = x.view(-1)  # Flatten the output for fully connected layers
+        row_num = self.fc_row_num(row_num)
         x = torch.cat((x, row_num))
-        x = self.fc0(x)
-        x = self.relu(x)
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.relu(x)
-        x = self.fc3(x)
-        x = self.relu(x)
-        x = self.fc4(x)
-        x = self.relu(x)
-        return x.reshape((17, 11))
+        x = self.fc_layers(x)
+        x = torch.sigmoid(x)
+        return x.reshape((17,11))
 
 if __name__ == "__main__":
     # Hyperparameters
     learning_rate = 2e-5
-    log_interval = 100
+    log_interval = 50
     num_epochs = 1_000
 
     # Save and Load Parameters
     save_folder = "model"
-    load_model = True
+    load_model = False
+
+    # Generator Parameters
+    num_workers = 12
 
     # Create an instance of the model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -256,25 +311,48 @@ if __name__ == "__main__":
     for _ in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         
-        # Initialize loss counter
+        # Initialize counters
         epoch_loss = 0.0
+        epoch_avg_loss = 0.0
+        step_count = 0
 
         print("Training Model")
-        # Initialize tqdm with the total number of iterations
-        progress_bar = tqdm(enumerate(data_generator("dataset.csv")), total=steps_per_epoch if not first_epoch else None, mininterval=0.5)
+        # Create a queue to store data generator pairs
+        data_queue = queue.Queue(100)
 
-        for i, (image, row_num, targets) in progress_bar:
-            if first_epoch:
-                steps_per_epoch += 1
-            optimizer_model.zero_grad()  # Zero the gradients
-            outputs = model(image, row_num)  # Forward pass
-            loss = criterion_model(outputs, targets)  # Calculate the loss
-            loss.backward()  # Backpropagation
-            optimizer_model.step()  # Update weights
-            epoch_loss += loss.item()
+        threads = []
 
-            if (i + 1) % log_interval == 0:
-                progress_bar.set_description(f"Loss[{epoch_loss / (i + 1):e}]")
+        for worker_num in range(num_workers):
+            # Start the thread to fill the queue
+            data_thread = threading.Thread(target=fill_queue, args=(data_queue, num_workers, worker_num))
+            data_thread.start()
+            threads.append(data_thread)
+
+        with tqdm(total=None if first_epoch else steps_per_epoch, mininterval=0.5) as pbar:
+            while True:
+                try:
+                    # Retrieve data from the queue
+                    i, (image, row_num, targets) = data_queue.get(timeout=10)
+                except queue.Empty:
+                    # If the queue is empty, break the loop
+                    break
+                if first_epoch:
+                    steps_per_epoch += 1
+                step_count += 1
+                optimizer_model.zero_grad()  # Zero the gradients
+                outputs = model(image, row_num)  # Forward pass
+                loss = criterion_model(outputs, targets)  # Calculate the loss
+                loss.backward()  # Backpropagation
+                optimizer_model.step()  # Update weights
+                epoch_loss += loss.item()
+
+                if step_count % log_interval == 0:
+                    epoch_avg_loss = epoch_loss / step_count
+                    pbar.set_description(f"Loss[{epoch_avg_loss:e}]")
+                pbar.update(1)
+
+        for thread in threads:
+            thread.join()
 
         # Print epoch-level loss for model
         print(f"Epoch {epoch+1} Loss: {epoch_loss / (steps_per_epoch):e}")

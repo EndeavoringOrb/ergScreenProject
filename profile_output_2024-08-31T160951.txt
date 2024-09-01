@@ -1,0 +1,107 @@
+Timer unit: 1e-07 s
+
+Total time: 7.1e-06 s
+File: C:\Users\aaron\CODING\ergScreenReader\cornersTrain.py
+Function: __len__ at line 23
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    23                                                   self.transform = transform
+
+Total time: 0.0046603 s
+File: C:\Users\aaron\CODING\ergScreenReader\cornersTrain.py
+Function: __init__ at line 18
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    18                                           
+    19                                           class CustomDataset(Dataset):
+    20         1      46598.0  46598.0    100.0      @profile
+    21         1          5.0      5.0      0.0      def __init__(self, csv_file, transform=None):
+    22                                                   self.data = pd.read_csv(csv_file)
+    23                                                   self.transform = transform
+    24                                           
+    25                                               @profile
+    26                                               def __len__(self):
+    27                                                   return len(self.data)
+    28                                           
+    29                                               @profile
+    30                                               def __getitem__(self, idx):
+    31                                                   img_path = self.data.iloc[idx, 0]
+    32                                                   points = self.data.iloc[idx, 1:].values.astype('float32')
+    33                                           
+    34                                                   image = Image.open(img_path)#.convert('L')  # Convert to grayscale
+    35                                           
+    36                                                   if self.transform:
+    37                                                       image = self.transform(image)
+    38                                           
+    39                                                   return image, torch.tensor(points)
+
+Total time: 13.9653 s
+File: C:\Users\aaron\CODING\ergScreenReader\cornersTrain.py
+Function: __getitem__ at line 27
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    27                                                   return len(self.data)
+
+Total time: 15.2412 s
+File: C:\Users\aaron\CODING\ergScreenReader\cornersTrain.py
+Function: main at line 95
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    95                                               return running_loss / len(val_loader)
+    96                                           
+    97                                           @profile
+    98         1          5.0      5.0      0.0  def main():
+    99                                               # Settings
+   100                                               batch_size = 'all'
+   101         1   12638162.0    1e+07      8.3  
+   102         1       1888.0   1888.0      0.0      # Set up device
+   103                                               device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+   104                                               print(f"Using {device}")
+   105         2        210.0    105.0      0.0  
+   106         1       1285.0   1285.0      0.0      # Set up data transformations
+   107         1         63.0     63.0      0.0      transform = transforms.Compose([
+   108         1        239.0    239.0      0.0          transforms.Resize((224, 224)),
+   109                                                   transforms.ToTensor(),
+   110                                                   transforms.Grayscale(num_output_channels=1),  
+   111                                               ])
+   112         1      46774.0  46774.0      0.0  
+   113         1        104.0    104.0      0.0      # Create datasets
+   114         1         42.0     42.0      0.0      dataset = CustomDataset('corners.csv', transform=transform)
+   115         1       2777.0   2777.0      0.0      train_size = int(0.8 * len(dataset))
+   116         1        739.0    739.0      0.0      val_size = len(dataset) - train_size
+   117         1        199.0    199.0      0.0      train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+   118                                               print(f"{train_size:,} items in train dataset.")
+   119                                               print(f"{val_size:,} items in val dataset.")
+   120         1       1927.0   1927.0      0.0  
+   121         1        323.0    323.0      0.0      # Create data loaders
+   122                                               train_loader = DataLoader(train_dataset, batch_size=(train_size if batch_size == 'all' else batch_size), shuffle=True)
+   123         1  139717445.0    1e+08     91.7      val_loader = DataLoader(val_dataset, batch_size=(val_size if batch_size == 'all' else batch_size), shuffle=False)
+   124                                           
+   125                                               train_set = [item for item in tqdm(train_loader, desc="Loading train dataset")]
+   126                                               val_set = [item for item in tqdm(val_loader, desc="Loading val dataset")]
+   127                                           
+   128                                               # Initialize the model, loss function, and optimizer
+   129                                               model = CNN().to(device)
+   130                                               print(f"Model has {sum([p.numel() for p in model.parameters()]):,} parameters")
+   131                                               criterion = nn.MSELoss()
+   132                                               optimizer = optim.Adam(model.parameters(), lr=0.001)
+   133                                           
+   134                                               # Training loop
+   135                                               num_epochs = 500
+   136                                               for epoch in range(num_epochs):
+   137                                                   train_loss = train(model, train_set, criterion, optimizer, device)
+   138                                                   val_loss = validate(model, val_set, criterion, device)
+   139                                                   clear_lines(2)
+   140                                                   print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+   141                                           
+   142                                               # Save the model
+   143                                               torch.save(model, 'cornerModels/model.pt')
+
+  0.00 seconds - C:\Users\aaron\CODING\ergScreenReader\cornersTrain.py:23 - __len__
+  0.00 seconds - C:\Users\aaron\CODING\ergScreenReader\cornersTrain.py:18 - __init__
+ 13.97 seconds - C:\Users\aaron\CODING\ergScreenReader\cornersTrain.py:27 - __getitem__
+ 15.24 seconds - C:\Users\aaron\CODING\ergScreenReader\cornersTrain.py:95 - main
