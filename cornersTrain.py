@@ -10,11 +10,16 @@ from tqdm import tqdm
 from pillow_heif import register_heif_opener
 from line_profiler import profile
 from helper_funcs import clear_lines
+import math
+import numpy as np
+import torchvision.transforms.functional as TF
+import matplotlib.pyplot as plt
 
 # Register HEIF opener
 register_heif_opener()
 
 profile.disable()
+
 
 class CustomDataset(Dataset):
     @profile
@@ -29,14 +34,15 @@ class CustomDataset(Dataset):
     @profile
     def __getitem__(self, idx):
         img_path = self.data.iloc[idx, 0]
-        points = self.data.iloc[idx, 1:].values.astype('float32')
+        points = self.data.iloc[idx, 1:].values.astype("float32")
 
-        image = Image.open(img_path)#.convert('L')  # Convert to grayscale
+        image = Image.open(img_path)  # .convert('L')  # Convert to grayscale
 
         if self.transform:
             image = self.transform(image)
 
         return image, torch.tensor(points)
+
 
 class CNN(nn.Module):
     @profile
@@ -68,6 +74,7 @@ class CNN(nn.Module):
         x = self.fc2(x)
         return x
 
+
 @profile
 def train(model, train_loader, criterion, optimizer, device):
     model.train()
@@ -82,6 +89,7 @@ def train(model, train_loader, criterion, optimizer, device):
         running_loss += loss.item()
     return running_loss / len(train_loader)
 
+
 @profile
 def validate(model, val_loader, criterion, device):
     model.eval()
@@ -94,25 +102,82 @@ def validate(model, val_loader, criterion, device):
             running_loss += loss.item()
     return running_loss / len(val_loader)
 
+
+def random_rotate_image_and_points(image: torch.Tensor, points: torch.Tensor, degrees):
+    # Reshape points to (4, 2)
+    points = points.view(-1, 4, 2)
+
+    # Generate a random rotation angle
+    angle = torch.rand(1).item() * 2 * degrees - degrees
+
+    # Rotate the image
+    rotated_image = TF.rotate(image, angle)
+
+    # Image.fromarray((rotated_image.numpy() * 255).astype(np.uint8).squeeze()).show()
+
+    # Convert angle to radians for point rotation
+    angle_rad = math.radians(angle)
+    cos_val = math.cos(-angle_rad)
+    sin_val = math.sin(-angle_rad)
+
+    # Create the rotation matrix
+    rotation_matrix = torch.tensor([[cos_val, -sin_val], [sin_val, cos_val]])
+
+    # Subtract the center, rotate, and add the center back
+    center = torch.tensor([0.5, 0.5])
+    rotated_points = (points - center) @ rotation_matrix.T + center
+
+    # Flatten the rotated points back to (8,)
+    rotated_points = rotated_points.view(-1, 8)
+
+    #plot_image_with_points(rotated_image, rotated_points, "img")
+
+    return rotated_image, rotated_points
+
+
+def plot_image_with_points(image: torch.Tensor, points: torch.Tensor, title: str):
+    # Convert the image to a NumPy array for plotting
+    image = image.squeeze().numpy()
+
+    # Reshape points to (4, 2)
+    points = points.view(4, 2)
+
+    # Plot the image
+    plt.imshow(image, cmap="gray")
+
+    # Plot the points
+    plt.scatter(
+        points[:, 0] * image.shape[-1], points[:, 1] * image.shape[-2], color="red"
+    )
+
+    # Set title
+    plt.title(title)
+
+    # Set axis limits
+    plt.xlim(0, image.shape[1])
+    plt.ylim(image.shape[0], 0)
+
+    plt.show()
+
+
 @profile
 def main():
     # Settings
-    batch_size = 128
+    batch_size = 16
 
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
 
     # Set up data transformations
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToImage(),
-        transforms.ToDtype(torch.float32, scale=True),
-        transforms.Grayscale(num_output_channels=1),  
-    ])
-    transform2 = transforms.Compose([
-        transforms.ColorJitter(),
-    ])
+    transform = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToImage(),
+            transforms.ToDtype(torch.float32, scale=True),
+            transforms.Grayscale(num_output_channels=1),
+        ]
+    )
 
     # Initialize the model, loss function, and optimizer
     model = CNN().to(device)
@@ -121,31 +186,54 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     # Create datasets
-    dataset = CustomDataset('corners.csv', transform=transform)
+    dataset = CustomDataset("corners.csv", transform=transform)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size]
+    )
     print(f"{train_size:,} items in train dataset.")
     print(f"{val_size:,} items in val dataset.")
 
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=(train_size if batch_size == 'all' else batch_size), shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=(val_size if batch_size == 'all' else batch_size), shuffle=False)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=(train_size if batch_size == "all" else batch_size),
+        shuffle=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=(val_size if batch_size == "all" else batch_size),
+        shuffle=False,
+    )
 
     train_set = [item for item in tqdm(train_loader, desc="Loading train dataset")]
-    val_set = [item for item in tqdm(val_loader, desc="Loading val dataset")]    
+    val_set = [item for item in tqdm(val_loader, desc="Loading val dataset")]
 
     # Training loop
-    num_epochs = 1_000
+    num_epochs = 1_000_000
     for epoch in range(num_epochs):
-        train_set = [transform2(item) for item in train_set]
-        train_loss = train(model, train_set, criterion, optimizer, device)
-        val_loss = validate(model, val_set, criterion, device)
+        train_loss = train(
+            model,
+            [random_rotate_image_and_points(item[0], item[1], 15) for item in train_set],
+            criterion,
+            optimizer,
+            device,
+        )
+        val_loss = validate(
+            model,
+            [random_rotate_image_and_points(item[0], item[1], 15) for item in val_set],
+            criterion,
+            device,
+        )
         clear_lines(2)
-        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        print(
+            f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.2e}, Val Loss: {val_loss:2e}"
+        )
 
         # Save the model
-        torch.save(model, 'cornerModels/model.pt')
+        torch.save(model, "cornerModels/model.pt")
+
 
 if __name__ == "__main__":
     main()

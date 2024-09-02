@@ -47,7 +47,7 @@ def main():
     model = load_model('cornerModels/model.pt', device)
 
     # Load the image
-    image_path = "test_images/IMG_9999.HEIC"
+    image_path = "test_images/IMG_E7749.JPG"
     image = Image.open(image_path)
 
     # Predict the points
